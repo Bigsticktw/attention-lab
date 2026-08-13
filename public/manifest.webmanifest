@@ -1,0 +1,17 @@
+{
+  "name": "Attention Lab",
+  "short_name": "Attention",
+  "description": "Closed-loop focused attention training and tracking system",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0b1110",
+  "theme_color": "#0b1110",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
