@@ -47,8 +47,12 @@ function appendRound_(record) {
 function saveSession_(record) {
   const sheet = spreadsheet_().getSheetByName(SHEETS.sessions);
   const values = ['session_id','date','duration','rounds','success_rate','threshold','max_interval','avg_interval'].map((key) => record[key]);
-  sheet.appendRow(values);
-  upsertDaily_(String(record.date));
+  const rowCount = Math.max(0, sheet.getLastRow() - DATA_START_ROW + 1);
+  const sessionIds = rowCount ? sheet.getRange(DATA_START_ROW, 1, rowCount, 1).getDisplayValues().flat() : [];
+  const index = sessionIds.indexOf(String(record.session_id));
+  if (index >= 0) sheet.getRange(index + DATA_START_ROW, 1, 1, values.length).setValues([values]);
+  else sheet.appendRow(values);
+  upsertDaily_(normalizeDate_(record.date));
 }
 
 function appendAttentionTest_(record) {
@@ -60,9 +64,10 @@ function upsertDaily_(date) {
   const book = spreadsheet_();
   const sessionSheet = book.getSheetByName(SHEETS.sessions);
   const sessionRowCount = Math.max(0, sessionSheet.getLastRow() - DATA_START_ROW + 1);
-  const sessions = sessionRowCount
-    ? sessionSheet.getRange(DATA_START_ROW, 1, sessionRowCount, 8).getValues().filter((row) => normalizeDate_(row[1]) === date)
-    : [];
+  const sessionRange = sessionRowCount ? sessionSheet.getRange(DATA_START_ROW, 1, sessionRowCount, 8) : null;
+  const sessionValues = sessionRange ? sessionRange.getValues() : [];
+  const sessionDates = sessionRange ? sessionRange.getDisplayValues().map((row) => normalizeDate_(row[1])) : [];
+  const sessions = sessionValues.filter((row, index) => sessionDates[index] === date);
   if (!sessions.length) return;
   const duration = sessions.reduce((sum, row) => sum + Number(row[2] || 0), 0);
   const totalRounds = sessions.reduce((sum, row) => sum + Number(row[3] || 0), 0);
