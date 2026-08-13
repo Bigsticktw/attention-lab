@@ -99,7 +99,13 @@ function getDashboard_() {
 }
 
 function normalizeDate_(value) {
-  if (value instanceof Date) return Utilities.formatDate(value, 'Asia/Taipei', 'yyyy-MM-dd');
+  if (value === null || value === undefined || value === '') return '';
+  if (typeof value === 'number') {
+    const serialDate = new Date(Date.UTC(1899, 11, 30) + value * 86400000);
+    return Utilities.formatDate(serialDate, 'Asia/Taipei', 'yyyy-MM-dd');
+  }
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (!Number.isNaN(parsed.getTime())) return Utilities.formatDate(parsed, 'Asia/Taipei', 'yyyy-MM-dd');
   return String(value || '').slice(0, 10);
 }
 
