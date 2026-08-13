@@ -5,6 +5,7 @@ const SHEETS = {
   daily: 'Daily',
   tests: 'Attention Tests',
 };
+const DATA_START_ROW = 5;
 
 function doGet() {
   return jsonResponse_({ ok: true, service: 'Attention Lab API', version: 1 });
@@ -57,7 +58,11 @@ function appendAttentionTest_(record) {
 
 function upsertDaily_(date) {
   const book = spreadsheet_();
-  const sessions = book.getSheetByName(SHEETS.sessions).getDataRange().getValues().slice(1).filter((row) => String(row[1]) === date);
+  const sessionSheet = book.getSheetByName(SHEETS.sessions);
+  const sessionRowCount = Math.max(0, sessionSheet.getLastRow() - DATA_START_ROW + 1);
+  const sessions = sessionRowCount
+    ? sessionSheet.getRange(DATA_START_ROW, 1, sessionRowCount, 8).getValues().filter((row) => normalizeDate_(row[1]) === date)
+    : [];
   if (!sessions.length) return;
   const duration = sessions.reduce((sum, row) => sum + Number(row[2] || 0), 0);
   const totalRounds = sessions.reduce((sum, row) => sum + Number(row[3] || 0), 0);
@@ -66,22 +71,31 @@ function upsertDaily_(date) {
   const maxes = sessions.map((row) => Number(row[6] || 0));
   const row = [date, duration, thresholds[thresholds.length - 1], totalRounds ? successes / totalRounds : 0, Math.max.apply(null, maxes)];
   const daily = book.getSheetByName(SHEETS.daily);
-  const dates = daily.getRange(2, 1, Math.max(1, daily.getLastRow() - 1), 1).getDisplayValues().flat();
+  const dailyRowCount = Math.max(0, daily.getLastRow() - DATA_START_ROW + 1);
+  const dates = dailyRowCount ? daily.getRange(DATA_START_ROW, 1, dailyRowCount, 1).getDisplayValues().flat() : [];
   const index = dates.indexOf(date);
-  if (index >= 0) daily.getRange(index + 2, 1, 1, row.length).setValues([row]);
+  if (index >= 0) daily.getRange(index + DATA_START_ROW, 1, 1, row.length).setValues([row]);
   else daily.appendRow(row);
 }
 
 function getDashboard_() {
   const sheet = spreadsheet_().getSheetByName(SHEETS.daily);
-  if (sheet.getLastRow() < 2) return [];
-  return sheet.getRange(Math.max(2, sheet.getLastRow() - 29), 1, Math.min(30, sheet.getLastRow() - 1), 5).getValues().map((row) => ({
-    date: Utilities.formatDate(new Date(row[0]), 'Asia/Taipei', 'yyyy-MM-dd'),
+  const rowCount = Math.max(0, sheet.getLastRow() - DATA_START_ROW + 1);
+  if (!rowCount) return [];
+  const count = Math.min(30, rowCount);
+  const startRow = sheet.getLastRow() - count + 1;
+  return sheet.getRange(startRow, 1, count, 5).getValues().map((row) => ({
+    date: normalizeDate_(row[0]),
     training_minutes: Number(row[1] || 0),
     threshold: Number(row[2] || 0),
     success_rate: Number(row[3] || 0),
     max_interval: Number(row[4] || 0),
   }));
+}
+
+function normalizeDate_(value) {
+  if (value instanceof Date) return Utilities.formatDate(value, 'Asia/Taipei', 'yyyy-MM-dd');
+  return String(value || '').slice(0, 10);
 }
 
 function jsonResponse_(body) {
