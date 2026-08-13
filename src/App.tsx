@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { Activity, Brain, Check, ChevronRight, Cloud, CloudOff, RotateCcw, Settings, Timer, Wind } from 'lucide-react'
+import { Activity, Brain, Check, ChevronRight, Cloud, CloudOff, QrCode, RotateCcw, Settings, Timer, Volume2, VolumeX, Wind } from 'lucide-react'
+import QRCode from 'react-qr-code'
 import { fetchDashboard, flushQueue, queueOrSend } from './api'
 import { nextInterval, summarizeSession, warmupInterval } from './adaptive'
-import { loadConfig, loadLocalHistory, loadQueue, localDailyMetrics, saveConfig, saveLocalSession } from './storage'
+import { playRoundCompleteSound, prepareRoundCompleteSound } from './audio'
+import { createPairingPayload, loadConfig, loadLocalHistory, loadQueue, loadSoundEnabled, localDailyMetrics, parsePairingHash, saveConfig, saveLocalSession, saveSoundEnabled } from './storage'
 import type { ApiConfig, DailyMetric, RoundRecord, RoundResult, SessionRecord } from './types'
 
 type View = 'dashboard' | 'training' | 'settings'
@@ -11,10 +13,11 @@ type TrainingPhase = 'idle' | 'running' | 'feedback' | 'summary'
 
 const formatSeconds = (value: number) => `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`
 const today = () => new Date().toLocaleDateString('sv-SE')
+const pairedConfig = typeof window === 'undefined' ? null : parsePairingHash(window.location.hash)
 
 function App() {
   const [view, setView] = useState<View>('dashboard')
-  const [config, setConfig] = useState<ApiConfig>(loadConfig)
+  const [config, setConfig] = useState<ApiConfig>(() => pairedConfig || loadConfig())
   const [metrics, setMetrics] = useState<DailyMetric[]>(localDailyMetrics)
   const [queueCount, setQueueCount] = useState(loadQueue().length)
   const [syncing, setSyncing] = useState(false)
@@ -24,11 +27,13 @@ function App() {
   const [remaining, setRemaining] = useState(target)
   const [lapseLevel, setLapseLevel] = useState(2)
   const [summary, setSummary] = useState<SessionRecord | null>(null)
+  const [soundEnabled, setSoundEnabled] = useState(loadSoundEnabled)
   const sessionId = useRef('')
   const sessionStartedAt = useRef(0)
   const roundStartedAt = useRef(0)
 
   const latest = metrics.at(-1)
+  const connected = Boolean(config.endpoint && config.token)
   const previous = metrics.at(-2)
   const thresholdChange = latest && previous && previous.threshold ? ((latest.threshold - previous.threshold) / previous.threshold) * 100 : 0
   const todayMinutes = metrics.filter((item) => item.date === today()).reduce((sum, item) => sum + Number(item.training_minutes || 0), 0)
@@ -50,6 +55,12 @@ function App() {
   }, [refresh])
 
   useEffect(() => {
+    if (!pairedConfig) return
+    saveConfig(pairedConfig)
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+  }, [])
+
+  useEffect(() => {
     if (phase !== 'running') return
     const interval = window.setInterval(() => {
       const elapsed = Math.floor((Date.now() - roundStartedAt.current) / 1000)
@@ -57,14 +68,16 @@ function App() {
       setRemaining(next)
       if (next === 0) {
         window.clearInterval(interval)
+        if (soundEnabled) void playRoundCompleteSound()
         navigator.vibrate?.([80, 60, 80])
         setPhase('feedback')
       }
     }, 200)
     return () => window.clearInterval(interval)
-  }, [phase, target])
+  }, [phase, soundEnabled, target])
 
   const beginRound = () => {
+    if (soundEnabled) void prepareRoundCompleteSound()
     if (!sessionId.current) {
       sessionId.current = crypto.randomUUID()
       sessionStartedAt.current = Date.now()
@@ -116,6 +129,13 @@ function App() {
     setPhase('idle')
   }
 
+  const toggleSound = () => {
+    const next = !soundEnabled
+    setSoundEnabled(next)
+    saveSoundEnabled(next)
+    if (next) void prepareRoundCompleteSound()
+  }
+
   const chartData = useMemo(() => metrics.slice(-7).map((item) => ({ ...item, label: item.date.slice(5) })), [metrics])
 
   return (
@@ -125,9 +145,9 @@ function App() {
           <span className="brand-mark"><Brain size={22} /></span>
           <span><strong>Attention Lab</strong><small>Closed-loop Focus Training</small></span>
         </button>
-        <button className={`sync-pill ${queueCount ? 'pending' : ''}`} onClick={() => void refresh()} disabled={syncing}>
-          {queueCount ? <CloudOff size={15} /> : <Cloud size={15} />}
-          {syncing ? '同步中' : queueCount ? `${queueCount} 筆待同步` : '已同步'}
+        <button className={`sync-pill ${!connected ? 'disconnected' : queueCount ? 'pending' : ''}`} onClick={() => connected ? void refresh() : setView('settings')} disabled={syncing} aria-label={!connected ? '尚未連線，開啟設定' : '同步 Google Sheets'}>
+          {!connected || queueCount ? <CloudOff size={15} /> : <Cloud size={15} />}
+          <span className="sync-label">{syncing ? '同步中' : !connected ? '未連線' : queueCount ? `${queueCount} 筆待同步` : '已同步'}</span>
         </button>
       </header>
 
@@ -180,12 +200,13 @@ function App() {
 
         {view === 'training' && (
           <section className="training page-enter">
-            <div className="training-header"><button className="text-button" onClick={() => setView('dashboard')}>← 返回</button><span>第 {rounds.length + 1} 輪</span></div>
+            <div className="training-header"><button className="text-button" onClick={() => setView('dashboard')}>← 返回</button><span>第 {rounds.length + 1} 輪</span><button className="sound-toggle" onClick={toggleSound} aria-pressed={soundEnabled} aria-label={soundEnabled ? '關閉結束提示音' : '開啟結束提示音'}>{soundEnabled ? <Volume2 /> : <VolumeX />}<span>{soundEnabled ? '提示音開' : '提示音關'}</span></button></div>
             {phase === 'running' && (
               <div className="timer-stage">
                 <p className="eyebrow">FOLLOW THE BREATH</p>
                 <div className="breath-orbit"><div className="breath-core"><strong>{formatSeconds(remaining)}</strong><span>專注呼吸</span></div></div>
                 <p className="timer-hint">感覺呼吸，不必控制呼吸。</p>
+                <p className="timer-alert">{soundEnabled ? '結束時會播放提示音並震動' : '提示音已關閉，結束時仍會震動'}</p>
               </div>
             )}
             {phase === 'feedback' && (
@@ -220,7 +241,9 @@ function App() {
 
 function SettingsPanel({ config, onSave }: { config: ApiConfig; onSave: (config: ApiConfig) => void }) {
   const [draft, setDraft] = useState(config)
-  return <section className="settings-page page-enter"><p className="eyebrow">PRIVATE CONNECTION</p><h1>Google Sheets 連線</h1><p>資料只會傳到你自己的 Apps Script。設定保存在此瀏覽器，不會提交到 GitHub。</p><label>Web App URL<input value={draft.endpoint} onChange={(event) => setDraft({ ...draft, endpoint: event.target.value.trim() })} placeholder="https://script.google.com/macros/s/.../exec" /></label><label>API Token<input type="password" value={draft.token} onChange={(event) => setDraft({ ...draft, token: event.target.value })} placeholder="你的私人 Token" /></label><button className="round-start" onClick={() => onSave(draft)} disabled={!draft.endpoint || !draft.token}>儲存連線設定</button><div className="privacy-note"><Cloud size={18}/><span><strong>公開前端，私人資料</strong><small>Spreadsheet ID 與 Token 不會包含在網站原始碼。</small></span></div></section>
+  const [showPairing, setShowPairing] = useState(false)
+  const pairingUrl = draft.endpoint && draft.token ? `${window.location.origin}${import.meta.env.BASE_URL}#setup=${createPairingPayload(draft)}` : ''
+  return <section className="settings-page page-enter"><p className="eyebrow">PRIVATE CONNECTION</p><h1>Google Sheets 連線</h1><p>資料只會傳到你自己的 Apps Script。設定保存在此瀏覽器，不會提交到 GitHub；每支手機第一次使用都要配對一次。</p><label>Web App URL<input value={draft.endpoint} onChange={(event) => setDraft({ ...draft, endpoint: event.target.value.trim() })} placeholder="https://script.google.com/macros/s/.../exec" /></label><label>API Token<input type="password" value={draft.token} onChange={(event) => setDraft({ ...draft, token: event.target.value })} placeholder="你的私人 Token" /></label><button className="round-start" onClick={() => onSave(draft)} disabled={!draft.endpoint || !draft.token}>儲存連線設定</button><button className="pairing-button" onClick={() => setShowPairing((current) => !current)} disabled={!pairingUrl}><QrCode />{showPairing ? '隱藏手機配對碼' : '顯示手機配對 QR Code'}</button>{showPairing && pairingUrl && <div className="pairing-card"><div className="qr-frame"><QRCode value={pairingUrl} size={196} /></div><strong>用自己的手機相機掃描</strong><p>開啟後會自動保存連線並清除網址中的配對資料。QR 內含私人 Token，請勿截圖或分享。</p></div>}<div className="privacy-note"><Cloud size={18}/><span><strong>公開前端，私人資料</strong><small>Spreadsheet ID 與 Token 不會包含在 GitHub 原始碼。</small></span></div></section>
 }
 
 export default App

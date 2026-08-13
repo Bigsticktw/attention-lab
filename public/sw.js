@@ -1,4 +1,4 @@
-const CACHE = 'attention-lab-v1'
+const CACHE = 'attention-lab-v2'
 const APP_SHELL = ['./', './manifest.webmanifest', './icon.svg']
 
 self.addEventListener('install', (event) => {

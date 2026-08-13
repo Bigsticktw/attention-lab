@@ -3,6 +3,7 @@ import type { ApiConfig, DailyMetric, PendingRequest, SessionRecord } from './ty
 const CONFIG_KEY = 'attention-lab-config'
 const QUEUE_KEY = 'attention-lab-queue'
 const HISTORY_KEY = 'attention-lab-history'
+const SOUND_KEY = 'attention-lab-sound-enabled'
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -15,6 +16,41 @@ function readJson<T>(key: string, fallback: T): T {
 
 export const loadConfig = (): ApiConfig => readJson(CONFIG_KEY, { endpoint: '', token: '' })
 export const saveConfig = (config: ApiConfig): void => localStorage.setItem(CONFIG_KEY, JSON.stringify(config))
+
+export const loadSoundEnabled = (): boolean => localStorage.getItem(SOUND_KEY) !== 'false'
+export const saveSoundEnabled = (enabled: boolean): void => localStorage.setItem(SOUND_KEY, String(enabled))
+
+function encodeBase64Url(value: string): string {
+  const bytes = new TextEncoder().encode(value)
+  let binary = ''
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte) })
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
+}
+
+function decodeBase64Url(value: string): string {
+  const normalized = value.replaceAll('-', '+').replaceAll('_', '/')
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=')
+  const binary = atob(padded)
+  return new TextDecoder().decode(Uint8Array.from(binary, (character) => character.charCodeAt(0)))
+}
+
+export function createPairingPayload(config: ApiConfig): string {
+  return encodeBase64Url(JSON.stringify(config))
+}
+
+export function parsePairingHash(hash: string): ApiConfig | null {
+  const prefix = '#setup='
+  if (!hash.startsWith(prefix)) return null
+  try {
+    const parsed = JSON.parse(decodeBase64Url(hash.slice(prefix.length))) as Partial<ApiConfig>
+    if (typeof parsed.endpoint !== 'string' || typeof parsed.token !== 'string') return null
+    const endpoint = new URL(parsed.endpoint)
+    if (endpoint.protocol !== 'https:' || endpoint.hostname !== 'script.google.com' || !parsed.token) return null
+    return { endpoint: endpoint.toString(), token: parsed.token }
+  } catch {
+    return null
+  }
+}
 
 export const loadQueue = (): PendingRequest[] => readJson(QUEUE_KEY, [])
 export const saveQueue = (queue: PendingRequest[]): void => localStorage.setItem(QUEUE_KEY, JSON.stringify(queue))
