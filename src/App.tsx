@@ -31,6 +31,7 @@ function App() {
   const sessionId = useRef('')
   const sessionStartedAt = useRef(0)
   const roundStartedAt = useRef(0)
+  const actionLocked = useRef(false)
 
   const latest = metrics.at(-1)
   const connected = Boolean(config.endpoint && config.token)
@@ -88,7 +89,9 @@ function App() {
     setPhase('running')
   }
 
-  const reportResult = async (result: RoundResult) => {
+  const reportResult = (result: RoundResult) => {
+    if (actionLocked.current) return
+    actionLocked.current = true
     const pairResults = [...rounds.map((round) => round.result), result]
     const next = nextInterval(target, pairResults)
     const record: RoundRecord = {
@@ -105,19 +108,28 @@ function App() {
     setRounds((current) => [...current, record])
     setTarget(next)
     setRemaining(next)
-    setQueueCount((await queueOrSend(config, 'round', record)) ? loadQueue().length : loadQueue().length)
+    const sync = queueOrSend(config, 'round', record)
+    setQueueCount(loadQueue().length)
     setPhase('idle')
+    window.setTimeout(() => { actionLocked.current = false }, 0)
+    void sync.finally(() => setQueueCount(loadQueue().length))
   }
 
-  const finishSession = async () => {
-    if (!rounds.length) return
+  const finishSession = () => {
+    if (!rounds.length || actionLocked.current) return
+    actionLocked.current = true
     const record = summarizeSession(sessionId.current, rounds, sessionStartedAt.current)
     saveLocalSession(record)
     setSummary(record)
     setMetrics(localDailyMetrics())
-    setQueueCount((await queueOrSend(config, 'session', record)) ? loadQueue().length : loadQueue().length)
+    const sync = queueOrSend(config, 'session', record)
+    setQueueCount(loadQueue().length)
     setPhase('summary')
-    void refresh()
+    window.setTimeout(() => { actionLocked.current = false }, 0)
+    void sync.finally(() => {
+      setQueueCount(loadQueue().length)
+      void refresh()
+    })
   }
 
   const resetTraining = () => {
@@ -127,6 +139,7 @@ function App() {
     setSummary(null)
     setTarget(warmupInterval(metrics.at(-1)?.threshold))
     setPhase('idle')
+    actionLocked.current = false
   }
 
   const toggleSound = () => {
@@ -212,7 +225,7 @@ function App() {
             {phase === 'feedback' && (
               <div className="feedback-stage">
                 <p className="eyebrow">ROUND {rounds.length + 1} COMPLETE</p><h2>剛才是否明顯走神？</h2><p>誠實回報比「答對」更重要。</p>
-                <div className="feedback-actions"><button className="success-action" onClick={() => void reportResult('Success')}><Check />穩定專注</button><button className="lapse-action" onClick={() => void reportResult('Lapse')}><RotateCcw />有走神</button></div>
+                <div className="feedback-actions"><button className="success-action" onClick={() => reportResult('Success')}><Check />穩定專注</button><button className="lapse-action" onClick={() => reportResult('Lapse')}><RotateCcw />有走神</button></div>
                 <label className="severity">若有走神，程度 <strong>{lapseLevel}</strong><input type="range" min="1" max="3" value={lapseLevel} onChange={(event) => setLapseLevel(Number(event.target.value))}/><span><small>立即察覺</small><small>很久才察覺</small></span></label>
               </div>
             )}
@@ -220,7 +233,7 @@ function App() {
               <div className="ready-stage">
                 <p className="eyebrow">ADAPTIVE INTERVAL</p><h2>{target}<small> 秒</small></h2><p>{rounds.length ? `已完成 ${rounds.length} 輪 · ${rounds.filter((round) => round.result === 'Success').length} 次穩定專注` : '今天從前次閾值的 80% 暖身開始。'}</p>
                 <button className="round-start" onClick={beginRound}><Wind />{rounds.length ? '開始下一輪' : '開始第一輪'}</button>
-                {rounds.length > 0 && <button className="finish-button" onClick={() => void finishSession()}>結束並儲存本次訓練</button>}
+                {rounds.length > 0 && <button className="finish-button" onClick={finishSession}>結束並儲存本次訓練</button>}
               </div>
             )}
             {phase === 'summary' && summary && (
