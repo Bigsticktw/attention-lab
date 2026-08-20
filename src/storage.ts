@@ -1,9 +1,11 @@
 import type { ApiConfig, DailyMetric, PendingRequest, SessionRecord } from './types'
+import { DEFAULT_DURATION_SECONDS, normalizeTrainingDuration } from './adaptive'
 
 const CONFIG_KEY = 'attention-lab-config'
 const QUEUE_KEY = 'attention-lab-queue'
 const HISTORY_KEY = 'attention-lab-history'
 const SOUND_KEY = 'attention-lab-sound-enabled'
+const DURATION_KEY = 'attention-lab-duration-seconds'
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -19,6 +21,11 @@ export const saveConfig = (config: ApiConfig): void => localStorage.setItem(CONF
 
 export const loadSoundEnabled = (): boolean => localStorage.getItem(SOUND_KEY) !== 'false'
 export const saveSoundEnabled = (enabled: boolean): void => localStorage.setItem(SOUND_KEY, String(enabled))
+export const loadTrainingDuration = (): number => {
+  const value = localStorage.getItem(DURATION_KEY)
+  return value === null ? DEFAULT_DURATION_SECONDS : normalizeTrainingDuration(Number(value))
+}
+export const saveTrainingDuration = (seconds: number): void => localStorage.setItem(DURATION_KEY, String(normalizeTrainingDuration(seconds)))
 
 function encodeBase64Url(value: string): string {
   const bytes = new TextEncoder().encode(value)

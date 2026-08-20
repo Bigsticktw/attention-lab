@@ -3,9 +3,9 @@ import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'rec
 import { Activity, Brain, Check, ChevronRight, Cloud, CloudOff, QrCode, RotateCcw, Settings, Timer, Volume2, VolumeX, Wind } from 'lucide-react'
 import QRCode from 'react-qr-code'
 import { fetchDashboard, flushQueue, queueOrSend } from './api'
-import { nextInterval, summarizeSession, warmupInterval } from './adaptive'
+import { normalizeTrainingDuration, summarizeSession } from './adaptive'
 import { playRoundCompleteSound, prepareRoundCompleteSound } from './audio'
-import { createPairingPayload, loadConfig, loadLocalHistory, loadQueue, loadSoundEnabled, localDailyMetrics, parsePairingHash, saveConfig, saveLocalSession, saveSoundEnabled } from './storage'
+import { createPairingPayload, loadConfig, loadLocalHistory, loadQueue, loadSoundEnabled, loadTrainingDuration, localDailyMetrics, parsePairingHash, saveConfig, saveLocalSession, saveSoundEnabled, saveTrainingDuration } from './storage'
 import type { ApiConfig, DailyMetric, RoundRecord, RoundResult, SessionRecord } from './types'
 
 type View = 'dashboard' | 'training' | 'settings'
@@ -22,23 +22,20 @@ function App() {
   const [queueCount, setQueueCount] = useState(loadQueue().length)
   const [syncing, setSyncing] = useState(false)
   const [phase, setPhase] = useState<TrainingPhase>('idle')
-  const [rounds, setRounds] = useState<RoundRecord[]>([])
-  const [target, setTarget] = useState(() => warmupInterval(loadLocalHistory().at(-1)?.threshold))
+  const [target, setTarget] = useState(() => normalizeTrainingDuration(loadTrainingDuration()))
   const [remaining, setRemaining] = useState(target)
   const [lapseLevel, setLapseLevel] = useState(2)
   const [summary, setSummary] = useState<SessionRecord | null>(null)
   const [soundEnabled, setSoundEnabled] = useState(loadSoundEnabled)
   const sessionId = useRef('')
-  const sessionStartedAt = useRef(0)
   const roundStartedAt = useRef(0)
   const actionLocked = useRef(false)
 
   const latest = metrics.at(-1)
   const connected = Boolean(config.endpoint && config.token)
-  const previous = metrics.at(-2)
-  const thresholdChange = latest && previous && previous.threshold ? ((latest.threshold - previous.threshold) / previous.threshold) * 100 : 0
   const todayMinutes = metrics.filter((item) => item.date === today()).reduce((sum, item) => sum + Number(item.training_minutes || 0), 0)
-  const dailyGoalMet = rounds.some((round) => round.result === 'Success') || loadLocalHistory().some((item) => item.date === today() && item.success_rate > 0)
+  const dailyGoalMet = metrics.some((item) => item.date === today() && Number(item.training_minutes) > 0)
+    || loadLocalHistory().some((item) => item.date === today() && item.rounds > 0)
 
   const refresh = useCallback(async () => {
     if (!config.endpoint || !config.token) return
@@ -79,11 +76,8 @@ function App() {
 
   const beginRound = () => {
     if (soundEnabled) void prepareRoundCompleteSound()
-    if (!sessionId.current) {
-      sessionId.current = crypto.randomUUID()
-      sessionStartedAt.current = Date.now()
-      setRounds([])
-    }
+    sessionId.current = crypto.randomUUID()
+    setSummary(null)
     roundStartedAt.current = Date.now()
     setRemaining(target)
     setPhase('running')
@@ -92,41 +86,27 @@ function App() {
   const reportResult = (result: RoundResult) => {
     if (actionLocked.current) return
     actionLocked.current = true
-    const pairResults = [...rounds.map((round) => round.result), result]
-    const next = nextInterval(target, pairResults)
     const record: RoundRecord = {
       timestamp: new Date().toISOString(),
       session_id: sessionId.current,
-      round: rounds.length + 1,
+      round: 1,
       target_duration: target,
-      actual_duration: Math.round((Date.now() - roundStartedAt.current) / 1000),
+      actual_duration: target,
       result,
       lapse_level: result === 'Success' ? 0 : lapseLevel,
-      next_duration: next,
-      session_elapsed: Math.round((Date.now() - sessionStartedAt.current) / 1000),
+      next_duration: target,
+      session_elapsed: target,
     }
-    setRounds((current) => [...current, record])
-    setTarget(next)
-    setRemaining(next)
-    const sync = queueOrSend(config, 'round', record)
-    setQueueCount(loadQueue().length)
-    setPhase('idle')
-    window.setTimeout(() => { actionLocked.current = false }, 0)
-    void sync.finally(() => setQueueCount(loadQueue().length))
-  }
-
-  const finishSession = () => {
-    if (!rounds.length || actionLocked.current) return
-    actionLocked.current = true
-    const record = summarizeSession(sessionId.current, rounds, sessionStartedAt.current)
-    saveLocalSession(record)
-    setSummary(record)
+    const sessionRecord = summarizeSession(sessionId.current, [record])
+    saveLocalSession(sessionRecord)
+    setSummary(sessionRecord)
     setMetrics(localDailyMetrics())
-    const sync = queueOrSend(config, 'session', record)
+    const roundSync = queueOrSend(config, 'round', record)
+    const sessionSync = queueOrSend(config, 'session', sessionRecord)
     setQueueCount(loadQueue().length)
     setPhase('summary')
     window.setTimeout(() => { actionLocked.current = false }, 0)
-    void sync.finally(() => {
+    void Promise.allSettled([roundSync, sessionSync]).finally(() => {
       setQueueCount(loadQueue().length)
       void refresh()
     })
@@ -134,12 +114,17 @@ function App() {
 
   const resetTraining = () => {
     sessionId.current = ''
-    sessionStartedAt.current = 0
-    setRounds([])
     setSummary(null)
-    setTarget(warmupInterval(metrics.at(-1)?.threshold))
+    setRemaining(target)
     setPhase('idle')
     actionLocked.current = false
+  }
+
+  const updateDuration = (seconds: number) => {
+    const next = normalizeTrainingDuration(seconds)
+    setTarget(next)
+    setRemaining(next)
+    saveTrainingDuration(next)
   }
 
   const toggleSound = () => {
@@ -156,7 +141,7 @@ function App() {
       <header className="topbar">
         <button className="brand" onClick={() => setView('dashboard')} aria-label="回到首頁">
           <span className="brand-mark"><Brain size={22} /></span>
-          <span><strong>Attention Lab</strong><small>Closed-loop Focus Training</small></span>
+          <span><strong>Attention Lab</strong><small>Fixed-duration Focus Training</small></span>
         </button>
         <button className={`sync-pill ${!connected ? 'disconnected' : queueCount ? 'pending' : ''}`} onClick={() => connected ? void refresh() : setView('settings')} disabled={syncing} aria-label={!connected ? '尚未連線，開啟設定' : '同步 Google Sheets'}>
           {!connected || queueCount ? <CloudOff size={15} /> : <Cloud size={15} />}
@@ -169,27 +154,23 @@ function App() {
           <section className="dashboard page-enter">
             <div className="hero-copy">
               <p className="eyebrow">TODAY · {today()}</p>
-              <h1>讓注意力回到<br /><em>可以訓練的尺度。</em></h1>
-              <p>不是追求撐得更久，而是找到今天剛好的能力邊界。</p>
+              <h1>一次設定，<br /><em>專注到底。</em></h1>
+              <p>預設五分鐘，也可以依今天的狀態自行調整。</p>
             </div>
 
             <div className={`daily-gate ${dailyGoalMet ? 'done' : ''}`}>
               <span className="gate-icon">{dailyGoalMet ? <Check /> : <Wind />}</span>
-              <span><small>今日最低完成條件</small><strong>{dailyGoalMet ? '已完成一次穩定專注' : '完成一次穩定專注為止'}</strong></span>
+              <span><small>今日最低完成條件</small><strong>{dailyGoalMet ? '已完成一次專注訓練' : '完成一次專注訓練'}</strong></span>
             </div>
 
             <div className="metrics-grid">
-              <article className="metric primary">
-                <span className="metric-label"><Activity size={17} /> Attention Threshold</span>
-                <strong>{Math.round(latest?.threshold || 20)}<small>秒</small></strong>
-                <span className={thresholdChange >= 0 ? 'positive' : 'negative'}>{thresholdChange >= 0 ? '↑' : '↓'} {Math.abs(thresholdChange).toFixed(1)}% vs. 上次</span>
-              </article>
-              <article className="metric"><span className="metric-label"><Timer size={17} /> 今日訓練</span><strong>{todayMinutes.toFixed(1)}<small>分鐘</small></strong><span>建議 10–15 分鐘</span></article>
-              <article className="metric"><span className="metric-label"><Check size={17} /> 成功率</span><strong>{Math.round((latest?.success_rate || 0) * 100)}<small>%</small></strong><span>目標邊界約 70%</span></article>
+              <article className="metric primary"><span className="metric-label"><Timer size={17} /> 今日訓練</span><strong>{todayMinutes.toFixed(1)}<small>分鐘</small></strong><span>完成一段由你決定的專注時間</span></article>
+              <article className="metric"><span className="metric-label"><Activity size={17} /> 本次設定</span><strong>{target / 60}<small>分鐘</small></strong><span>預設 5 分鐘，可自行調整</span></article>
+              <article className="metric"><span className="metric-label"><Check size={17} /> 最近自評</span><strong>{Math.round((latest?.success_rate || 0) * 100)}<small>%</small></strong><span>只記錄回報，不調整下次時長</span></article>
             </div>
 
             <article className="trend-card">
-              <div><p className="eyebrow">7-DAY SIGNAL</p><h2>專注閾值趨勢</h2></div>
+              <div><p className="eyebrow">7-DAY TRAINING</p><h2>每日訓練分鐘</h2></div>
               <div className="chart-wrap">
                 {chartData.length ? (
                   <ResponsiveContainer width="100%" height={220}>
@@ -198,22 +179,22 @@ function App() {
                       <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: '#82918b', fontSize: 12 }} />
                       <YAxis axisLine={false} tickLine={false} tick={{ fill: '#82918b', fontSize: 12 }} />
                       <Tooltip contentStyle={{ background: '#151d1a', border: '1px solid #2c3833', borderRadius: 12 }} />
-                      <Area type="monotone" dataKey="threshold" stroke="#9fe6c3" strokeWidth={3} fill="url(#attentionFill)" />
+                      <Area type="monotone" dataKey="training_minutes" stroke="#9fe6c3" strokeWidth={3} fill="url(#attentionFill)" />
                     </AreaChart>
                   </ResponsiveContainer>
-                ) : <div className="empty-chart">完成第一輪訓練後，趨勢會從這裡開始。</div>}
+                ) : <div className="empty-chart">完成第一次訓練後，紀錄會從這裡開始。</div>}
               </div>
             </article>
 
             <button className="start-cta" onClick={() => { setView('training'); resetTraining() }}>
-              <span><small>Today's Training</small><strong>開始閉環訓練</strong></span><ChevronRight />
+              <span><small>Today's Training</small><strong>開始專注訓練</strong></span><ChevronRight />
             </button>
           </section>
         )}
 
         {view === 'training' && (
           <section className="training page-enter">
-            <div className="training-header"><button className="text-button" onClick={() => setView('dashboard')}>← 返回</button><span>第 {rounds.length + 1} 輪</span><button className="sound-toggle" onClick={toggleSound} aria-pressed={soundEnabled} aria-label={soundEnabled ? '關閉結束提示音' : '開啟結束提示音'}>{soundEnabled ? <Volume2 /> : <VolumeX />}<span>{soundEnabled ? '提示音開' : '提示音關'}</span></button></div>
+            <div className="training-header"><button className="text-button" onClick={() => setView('dashboard')} disabled={phase === 'running' || phase === 'feedback'}>← 返回</button><span>單次訓練</span><button className="sound-toggle" onClick={toggleSound} aria-pressed={soundEnabled} aria-label={soundEnabled ? '關閉結束提示音' : '開啟結束提示音'}>{soundEnabled ? <Volume2 /> : <VolumeX />}<span>{soundEnabled ? '提示音開' : '提示音關'}</span></button></div>
             {phase === 'running' && (
               <div className="timer-stage">
                 <p className="eyebrow">FOLLOW THE BREATH</p>
@@ -224,20 +205,21 @@ function App() {
             )}
             {phase === 'feedback' && (
               <div className="feedback-stage">
-                <p className="eyebrow">ROUND {rounds.length + 1} COMPLETE</p><h2>剛才是否明顯走神？</h2><p>誠實回報比「答對」更重要。</p>
+                <p className="eyebrow">SESSION COMPLETE</p><h2>剛才是否明顯走神？</h2><p>這項回報只用來留下紀錄，不會改變下次時長。</p>
                 <div className="feedback-actions"><button className="success-action" onClick={() => reportResult('Success')}><Check />穩定專注</button><button className="lapse-action" onClick={() => reportResult('Lapse')}><RotateCcw />有走神</button></div>
                 <label className="severity">若有走神，程度 <strong>{lapseLevel}</strong><input type="range" min="1" max="3" value={lapseLevel} onChange={(event) => setLapseLevel(Number(event.target.value))}/><span><small>立即察覺</small><small>很久才察覺</small></span></label>
               </div>
             )}
             {phase === 'idle' && (
               <div className="ready-stage">
-                <p className="eyebrow">ADAPTIVE INTERVAL</p><h2>{target}<small> 秒</small></h2><p>{rounds.length ? `已完成 ${rounds.length} 輪 · ${rounds.filter((round) => round.result === 'Success').length} 次穩定專注` : '今天從前次閾值的 80% 暖身開始。'}</p>
-                <button className="round-start" onClick={beginRound}><Wind />{rounds.length ? '開始下一輪' : '開始第一輪'}</button>
-                {rounds.length > 0 && <button className="finish-button" onClick={finishSession}>結束並儲存本次訓練</button>}
+                <p className="eyebrow">SESSION DURATION</p><h2>{formatSeconds(target)}</h2><p>一次倒數完成，不會依表現自動增減。</p>
+                <div className="duration-presets" aria-label="快速選擇訓練時長">{[3, 5, 10, 15].map((minutes) => <button key={minutes} className={target === minutes * 60 ? 'active' : ''} onClick={() => updateDuration(minutes * 60)}>{minutes} 分</button>)}</div>
+                <label className="duration-picker"><span>自訂時長</span><input type="number" min="1" max="60" step="1" value={target / 60} onChange={(event) => updateDuration(Number(event.target.value) * 60)} /><small>分鐘（1–60）</small></label>
+                <button className="round-start" onClick={beginRound}><Wind />開始 {target / 60} 分鐘訓練</button>
               </div>
             )}
             {phase === 'summary' && summary && (
-              <div className="summary-stage"><span className="summary-check"><Check /></span><p className="eyebrow">SESSION SAVED</p><h2>{summary.success_rate > 0 ? '今天的閉環已建立。' : '資料已保存，明天繼續。'}</h2><div className="summary-grid"><span><small>輪數</small><strong>{summary.rounds}</strong></span><span><small>成功率</small><strong>{Math.round(summary.success_rate * 100)}%</strong></span><span><small>閾值</small><strong>{Math.round(summary.threshold)}s</strong></span></div><button className="round-start" onClick={() => setView('dashboard')}>查看儀表板</button></div>
+              <div className="summary-stage"><span className="summary-check"><Check /></span><p className="eyebrow">SESSION SAVED</p><h2>本次專注訓練已完成。</h2><div className="summary-grid"><span><small>訓練時長</small><strong>{formatSeconds(summary.threshold)}</strong></span><span><small>自評</small><strong>{summary.success_rate > 0 ? '穩定' : '走神'}</strong></span><span><small>紀錄</small><strong>已儲存</strong></span></div><button className="round-start" onClick={() => setView('dashboard')}>查看儀表板</button></div>
             )}
           </section>
         )}
