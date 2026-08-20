@@ -1,10 +1,10 @@
 # Attention Lab
 
-Closed-loop focused attention training and tracking PWA. Each round asks for an honest success/lapse report and changes the next interval only after a two-result confirmation window.
+Fixed-duration focused attention training and tracking PWA. Each session defaults to five minutes, can be adjusted from 1 to 60 minutes, and ends with one honest stable/lapse report. The result is recorded but never changes the next session automatically.
 
 ## Daily completion rule
 
-The minimum daily condition is one reported `Success`. A lapse is still valid training data, but the auxiliary task remains open until one successful round is completed.
+The minimum daily condition is one completed timed session. Both `Success` and `Lapse` are valid self-reports and count as a completed session.
 
 ## Local development
 
@@ -31,15 +31,17 @@ Connection settings are private to each browser. On an already connected device,
 
 The header reports `Not connected`, `Pending sync`, or `Synced`. Tapping `Not connected` opens Settings.
 
-## Round completion alert
+## Session completion alert
 
-Starting a round unlocks mobile audio. At the end, the app plays a three-note chime and requests vibration when supported. The speaker button in the training header stores the user's sound preference locally.
+Starting a session unlocks mobile audio. At the end, the app plays a three-note chime and requests vibration when supported. The speaker button in the training header stores the user's sound preference locally. The selected duration is also stored in the current browser.
 
 ## Data contract
 
-- `Rounds`: immutable raw round evidence.
+- `Rounds`: immutable raw evidence; fixed-duration sessions write one compatible round.
 - `Sessions`: one row per completed session.
 - `Daily`: one upserted daily aggregate.
 - `Attention Tests`: reserved for the independent SART phase.
+
+Legacy `threshold`, `max_interval`, and `avg_interval` fields remain populated with the selected duration so existing Sheets and queued requests stay compatible. The current UI treats them as compatibility fields, not as an adaptive attention threshold.
 
 Queued writes remain in local storage until the API is reachable again.

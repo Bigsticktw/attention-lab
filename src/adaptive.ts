@@ -1,36 +1,26 @@
-import type { RoundRecord, RoundResult, SessionRecord } from './types'
+import type { RoundRecord, SessionRecord } from './types'
 
-export const MIN_INTERVAL = 10
-export const MAX_INTERVAL = 600
+export const DEFAULT_DURATION_SECONDS = 5 * 60
+export const MIN_DURATION_SECONDS = 60
+export const MAX_DURATION_SECONDS = 60 * 60
 
-export function clampInterval(seconds: number): number {
-  return Math.max(MIN_INTERVAL, Math.min(MAX_INTERVAL, Math.round(seconds)))
+export function normalizeTrainingDuration(seconds: number): number {
+  if (!Number.isFinite(seconds)) return DEFAULT_DURATION_SECONDS
+  return Math.max(MIN_DURATION_SECONDS, Math.min(MAX_DURATION_SECONDS, Math.round(seconds)))
 }
 
-export function nextInterval(current: number, recentResults: RoundResult[]): number {
-  if (recentResults.length < 2) return clampInterval(current)
-  const pair = recentResults.slice(-2)
-  if (pair.every((result) => result === 'Success')) return clampInterval(current * 1.1)
-  if (pair.every((result) => result === 'Lapse')) return clampInterval(current * 0.9)
-  return clampInterval(current)
-}
-
-export function warmupInterval(previousThreshold?: number): number {
-  return clampInterval(previousThreshold ? previousThreshold * 0.8 : 20)
-}
-
-export function summarizeSession(sessionId: string, rounds: RoundRecord[], startedAt: number): SessionRecord {
+export function summarizeSession(sessionId: string, rounds: RoundRecord[]): SessionRecord {
   const successes = rounds.filter((round) => round.result === 'Success').length
   const intervals = rounds.map((round) => round.target_duration)
   const successRate = rounds.length ? successes / rounds.length : 0
-  const candidates = [...rounds]
-    .sort((a, b) => Math.abs((a.result === 'Success' ? 1 : 0) - 0.7) - Math.abs((b.result === 'Success' ? 1 : 0) - 0.7))
-  const threshold = candidates[0]?.target_duration ?? 20
+  // Keep the legacy Sheet fields populated for backwards compatibility. In the
+  // fixed-duration flow, `threshold` means the selected session duration.
+  const threshold = rounds.at(-1)?.target_duration ?? DEFAULT_DURATION_SECONDS
 
   return {
     session_id: sessionId,
     date: new Date().toLocaleDateString('sv-SE'),
-    duration: Math.max(0, (Date.now() - startedAt) / 60000),
+    duration: intervals.length ? rounds.reduce((sum, round) => sum + round.actual_duration, 0) / 60 : 0,
     rounds: rounds.length,
     success_rate: successRate,
     threshold,
